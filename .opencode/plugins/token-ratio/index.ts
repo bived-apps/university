@@ -7,7 +7,7 @@
 // 5 minutes as a shields.io endpoint file, for a README badge (docs/TOKENS.md).
 // Public registry (opt-in; docs/REGISTRY.md): on only when BIVE_REGISTRY=on or when the project already carries a
 // committed .bive/registry-id (BIVE_REGISTRY=off silences it anyway). When a root session goes idle, the human and
-// agent tokens (agent tokens also per agent name and provider/model: the llm variable), the guard's refusals
+// agent tokens (agent tokens also per Bive role and canonical provider/model, #376: the llm variable), the guard's refusals
 // (violations) since the last send and the code size (tracked text lines, two significant figures) are posted with
 // the random id of .bive/registry-id. Nothing else: no name, path or text.
 // A delegate process is started with BIVE_ROLE=delegate: its prompt comes from the coordinator, so it counts as agent
@@ -18,7 +18,8 @@ import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import os from "node:os"
 import path from "node:path"
-import { codeLines, mainCheckout, ownSession, totals, twoDigits } from "./lib.ts"
+import { biveRole, canonicalModel, claimViolations, codeLines, mainCheckout, ownSession, registryFailureMessage, totals,
+         twoDigits, type ViolationCounters } from "./lib.ts"
 
 const SHARE_EVERY_MS = 5 * 60 * 1000
 const FIRST_SHARE_MS = 10 * 1000
@@ -53,6 +54,12 @@ export default Plugin.define({
       && (process.env.BIVE_REGISTRY === "on" || existsSync(idFile))
     const registryUrl = process.env.BIVE_REGISTRY_URL || REGISTRY_URL
     const pending = { human: 0, agent: 0, violations: 0 }
+    // Issue #376: each agent line is counted under the session's Bive role and the model's canonical name.
+    const readText = (file: string) => { try { return readFileSync(file, "utf8") } catch { return undefined } }
+    const roleOf = (agent: string) => biveRole(agent, process.env.BIVE_ROLE,
+                                               readText(path.join(ctx.location.directory, ".bive", "state", "role")),
+                                               ctx.location.directory)
+    const canonicalOf = (route: string) => canonicalModel(route, readText(path.join(state, "models.local.json")))
     // The llm variable, per "agent|provider/model": output tokens, input tokens (prompt + cache reads) and the summed
     // step time in milliseconds (step started -> ended), from which the registry derives its speed metrics.
     let pendingModels: Record<string, Use> = {}
@@ -60,8 +67,8 @@ export default Plugin.define({
       const c = (pendingModels[key] ??= { tokens: 0, input: 0, ms: 0, replies: 0 })
       c.tokens += u.tokens; c.input += u.input; c.ms += u.ms; c.replies += u.replies
     }
-    const g = globalThis as { __biveViolations?: number }   // counted by the worktree-guard plugin
-    let violationsSeen = 0
+    // Counted by the worktree-guard plugin; the reported part is process-wide as well (claimViolations).
+    const g = globalThis as ViolationCounters
     let loc = { at: 0, value: 0 }
     let project = ""
     let warned = false
@@ -98,7 +105,7 @@ export default Plugin.define({
                  input = 0, ms = 0) => {
       if (tokens <= 0) return
       pending[kind] += tokens
-      if (kind === "agent" && model) addUse(`${agentName || "unknown"}|${model}`, { tokens, input, ms, replies: 1 })
+      if (kind === "agent" && model) addUse(`${roleOf(agentName)}|${canonicalOf(model)}`, { tokens, input, ms, replies: 1 })
       appendFileSync(file, JSON.stringify({ t: Date.now(), kind, tokens, session, model }) + "\n")
       share()
     }
@@ -121,9 +128,8 @@ export default Plugin.define({
     }
 
     const report = async () => {
-      const v = (g.__biveViolations ?? 0) - violationsSeen
+      const v = claimViolations(g)
       if (v > 0) {
-        violationsSeen += v
         pending.violations += v
         appendFileSync(file, JSON.stringify({ t: Date.now(), kind: "violation", count: v }) + "\n")
       }
@@ -145,7 +151,7 @@ export default Plugin.define({
         pending.human += body.human; pending.agent += body.agent   // kept for the next session end
         pending.violations += body.violations
         for (const { agent, model, ...u } of body.llm) addUse(`${agent}|${model}`, u)
-        if (!warned) console.error(`Bive registry: not sent (${(err as Error).message}); retried at each session end.`)
+        if (!warned) console.error(registryFailureMessage((err as Error).message))   // once per session (#261)
         warned = true
       }
     }

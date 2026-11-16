@@ -62,3 +62,65 @@ export function totals(log: string): { human: number, agent: number, ratio: numb
   }
   return { human, agent, ratio: human ? Math.round(agent / human) : null }
 }
+
+// The one line said when the registry report fails (#261): it names the registry, so an anonymous Cloudflare 403 is
+// not mistaken for a model provider's refusal; a 401/403 points to the Worker's side (`wrangler whoami`, then
+// `wrangler login`). Nothing is retried here: the counts wait for the next session end.
+export function registryFailureMessage(detail: string): string {
+  const auth = /\b(401|403)\b|authenticat|attention required/i.test(detail)
+  return `Bive registry report (token counter, not the model) not sent: ${detail}; retried at the next session end.` +
+    (auth ? " A 401/403 or a Cloudflare 'Attention Required' page comes from the registry Worker's side: check with" +
+      " `wrangler whoami`, reconnect with `wrangler login` (docs/REGISTRY.md › Troubleshooting)." : "")
+}
+
+// Issue #376: the registry counts per Bive role and canonical model, not per OpenCode agent and route.
+const ROLES = new Set(["coordinator", "delegate", "advisor"])
+
+// The session's Bive role, from the signals the guard reads (docs/ROLE-START.md): its agent when that is a Bive one,
+// else BIVE_ROLE, else the role file `.bive/state/role` of its directory, else a `.worktrees/issue-<n>` directory (a
+// delegate). Without any, the OpenCode agent name stays (the registry shows it as "other"), or "unknown".
+export function biveRole(agent: string, envRole: string | undefined, roleFile: string | undefined,
+                         directory: string): string {
+  for (const v of [agent, envRole, roleFile?.trim()]) if (v && ROLES.has(v)) return v
+  if (/[\\/]\.worktrees[\\/]issue-\d+$/.test(path.resolve(directory))) return "delegate"
+  return agent || "unknown"
+}
+
+// The canonical model of a route, through the local alias file `.bive/state/models.local.json` read backwards
+// ({"aliases": {canonical: route}}, docs/PROVIDERS.md). The file wins. Without a match, a `claude-agent/` route still
+// gets Anthropic's name: a versioned id (`claude-agent/claude-opus-5`) maps to `anthropic/<id>`, and a short name
+// through CLAUDE_AGENT_SHORT. Any other unknown route, or an unreadable file, gives the route back.
+// The claude-agent provider's short names, as it labels them (checked 2026-11-16: Opus 5.5, Sonnet 5.5, Haiku 5.5,
+// Fable 5.2). When a family gets a new version, update this table and its test in the same commit.
+export const CLAUDE_AGENT_SHORT: Record<string, string> = {
+  opus: "anthropic/claude-opus-5-5", sonnet: "anthropic/claude-sonnet-5-5",
+  haiku: "anthropic/claude-haiku-5-5", fable: "anthropic/claude-fable-5-2",
+}
+export function canonicalModel(route: string, aliasesText: string | undefined): string {
+  if (!route) return route
+  if (aliasesText) {
+    try {
+      const aliases = (JSON.parse(aliasesText) as { aliases?: Record<string, unknown> }).aliases ?? {}
+      for (const [canonical, alias] of Object.entries(aliases)) if (alias === route) return canonical
+    } catch {
+      // A corrupt alias file is the owner's to fix; fall through to the built-in names.
+    }
+  }
+  const m = /^claude-agent\/(.+)$/.exec(route)
+  if (!m) return route
+  if (m[1].startsWith("claude-")) return `anthropic/${m[1]}`
+  return CLAUDE_AGENT_SHORT[m[1]] ?? route
+}
+
+// The guard's refusals not yet reported, claimed once per process. The worktree-guard plugin counts every refusal in
+// one process-wide counter (`__biveViolations`); the reported part must be process-wide too, or each new session's
+// plugin instance would start at 0 and report the whole running total again (a field report: 230 refusals reported as
+// about 10,000 when some sixty sessions shared one process). Returns the new refusals and marks them reported.
+export type ViolationCounters = { __biveViolations?: number, __biveViolationsReported?: number }
+export function claimViolations(g: ViolationCounters): number {
+  const total = g.__biveViolations ?? 0
+  const reported = g.__biveViolationsReported ?? 0
+  const fresh = total > reported ? total - reported : 0
+  g.__biveViolationsReported = Math.max(total, reported)
+  return fresh
+}
