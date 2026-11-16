@@ -10,7 +10,9 @@ and Bive's skill provisioning read.
 
 - `candidates/<id>/`: a lesson (`SKILL.md`) and its exam (`CASE.md`). Not served, not trusted.
 - `catalog/`: only lessons that passed. `catalog/index.json` lists them (`{name, version, files}`); served at
-  `https://bived-apps.github.io/university/catalog/` and usable as a Bive catalog source.
+  `https://bived-apps.github.io/university/catalog/` and usable as a Bive catalog source. The `catalog-check`
+  workflow fails any change where a lesson in `catalog/` has no `results/` file with its id, `verdict: ships`, at
+  least 3 runs a side and a positive gain, or where `index.json` and `catalog/` disagree.
 - `results/`: every experiment, passing or not: date, model, with and without the lesson, the held-out case, the
   score. A failed lesson stays here as evidence.
 
