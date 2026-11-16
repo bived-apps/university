@@ -1,0 +1,4 @@
+# Bive: run-time state of the agents (briefs and reports being written, session notes). Prompts and templates are versioned.
+.bive/state/
+# Delegates' worktrees, one per issue (AGENTS.md › Rules): inside the checkout, never committed.
+.worktrees/
