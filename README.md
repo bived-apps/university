@@ -1,3 +1,5 @@
+<img src="assets/university-mark.svg" width="96" alt="University's mark: a graduation cap traced by small paper companions, the owner at the end of its tassel">
+
 # Bive university
 
 Short lessons from real [Bive](https://github.com/jcherfils/bive) runs, for less skilled models, written down by
